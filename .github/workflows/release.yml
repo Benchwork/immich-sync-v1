@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish-windows:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: Immich Sync ${{ github.ref_name }}
+          releaseBody: |
+            Windows x64 installers for **Immich Sync** (watch folders and upload media to [Immich](https://immich.app/)).
+
+            | Asset | Use |
+            |-------|-----|
+            | `*_x64-setup.exe` | NSIS installer (typical install) |
+            | `*_x64_en-US.msi` | MSI (managed / silent installs) |
+
+            Requires **WebView2** (included on most Windows 10/11 systems).
+          releaseDraft: false
+          prerelease: false
