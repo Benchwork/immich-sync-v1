@@ -1,0 +1,4 @@
+# Use a repo-level target dir so builds work when `src-tauri/target` is not writable
+# (e.g. sync/AV locks). Installers: ../.cargo-target/release/bundle/nsis|msi/
+[build]
+target-dir = "../.cargo-target"
