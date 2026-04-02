@@ -1,0 +1,17 @@
+immich-sync — third-party open-source components
+
+The source code in this repository is licensed under the MIT License (see LICENSE).
+
+Built binaries link statically or dynamically to many crates and npm packages.
+Those dependencies remain under their own licenses (e.g. MIT, Apache-2.0,
+MPL-2.0, ISC, BSD, Unicode-3.0, CDLA-Permissive-2.0). There is no GPL or AGPL
+in the resolved dependency tree as of the last audit (`cargo license` and
+package-lock.json).
+
+Notable Rust crates under Mozilla Public License 2.0 include cssparser and
+selectors (Servo / HTML parsing stack). Compliance is satisfied by retaining
+this notice and the upstream license texts in the published crate sources on
+crates.io.
+
+Run `cargo license` in `src-tauri/` and inspect `package-lock.json` for
+current dependency license metadata.

@@ -3,8 +3,9 @@ name = "immich-sync"
 version = "0.0.1"
 description = "Background folder sync to Immich (Windows)"
 rust-version = "1.77"
-authors = ["you"]
+authors = ["Benchwork"]
 edition = "2021"
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

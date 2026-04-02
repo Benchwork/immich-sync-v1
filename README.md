@@ -1,6 +1,12 @@
-# Tauri + SvelteKit + TypeScript
+# Immich Sync
 
-This template should help get you started developing with Tauri, SvelteKit and TypeScript in Vite.
+Windows desktop app (Tauri 2 + SvelteKit) that watches folders and uploads media to [Immich](https://immich.app/).
+
+**License:** [MIT](LICENSE). Third-party components keep their own licenses; see [NOTICE](NOTICE).
+
+## Development
+
+Stack: Tauri + SvelteKit + TypeScript + Vite.
 
 ## Recommended IDE Setup
 
