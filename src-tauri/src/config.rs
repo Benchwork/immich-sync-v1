@@ -10,6 +10,9 @@ pub struct AppConfig {
     pub server_url: String,
     pub watch_paths: Vec<String>,
     pub sync_enabled: bool,
+    /// When true, closing or minimizing the window hides it to the system tray instead.
+    #[serde(default)]
+    pub minimize_to_tray: bool,
 }
 
 impl Default for AppConfig {
@@ -18,6 +21,7 @@ impl Default for AppConfig {
             server_url: "http://127.0.0.1:2283".to_string(),
             watch_paths: Vec::new(),
             sync_enabled: false,
+            minimize_to_tray: false,
         }
     }
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { message as dialogMessage, open } from "@tauri-apps/plugin-dialog";
   import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
   import { onMount } from "svelte";
 
@@ -8,6 +8,7 @@
     serverUrl: string;
     watchPaths: string[];
     syncEnabled: boolean;
+    minimizeToTray: boolean;
     hasApiKey: boolean;
   };
 
@@ -15,7 +16,17 @@
     running: boolean;
     lastError: string | null;
     lastUploadMs: number | null;
-    uploadsOk: number;
+    localFilesTotal: number;
+    localFilesUploaded: number;
+    currentFile: string | null;
+  };
+
+  type StorageInfo = {
+    serverDiskAvailableRaw: number | null;
+    serverDiskUsagePercentage: number | null;
+    serverDiskAvailableHuman: string | null;
+    serverStorageForbidden: boolean;
+    serverError: string | null;
   };
 
   let settings = $state<Settings | null>(null);
@@ -26,7 +37,11 @@
   let messageKind = $state<"ok" | "err" | null>(null);
   let autostartOn = $state(false);
   let status = $state<SyncStatus | null>(null);
+  let storageInfo = $state<StorageInfo | null>(null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let storagePollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Dedupe dialog alerts for the same lastError string. */
+  let lastOfflineDialogError = $state<string | null>(null);
 
   function show(msg: string, kind: "ok" | "err") {
     message = msg;
@@ -44,19 +59,49 @@
     return String(e);
   }
 
+  async function refreshStorage() {
+    try {
+      storageInfo = await invoke<StorageInfo>("get_storage_info");
+    } catch {
+      storageInfo = null;
+    }
+  }
+
   async function refresh() {
     settings = await invoke<Settings>("get_settings");
     autostartOn = await isEnabled();
     status = await invoke<SyncStatus>("get_sync_status");
+    // Do not await: storage fetch hits the network and must not block Save or typing when Immich is down.
+    void refreshStorage();
   }
+
+  $effect(() => {
+    const e = status?.lastError;
+    if (!e) {
+      lastOfflineDialogError = null;
+      return;
+    }
+    if (
+      e.includes("Immich server is offline") &&
+      e.includes("Sync stopped") &&
+      e !== lastOfflineDialogError
+    ) {
+      lastOfflineDialogError = e;
+      void dialogMessage(e, { title: "Immich server unreachable", kind: "error" });
+    }
+  });
 
   onMount(() => {
     void refresh();
     pollTimer = setInterval(() => {
       void invoke<SyncStatus>("get_sync_status").then((s) => (status = s));
     }, 2000);
+    storagePollTimer = setInterval(() => {
+      void refreshStorage();
+    }, 15000);
     return () => {
       if (pollTimer) clearInterval(pollTimer);
+      if (storagePollTimer) clearInterval(storagePollTimer);
     };
   });
 
@@ -68,6 +113,7 @@
           serverUrl: settings.serverUrl,
           watchPaths: settings.watchPaths,
           syncEnabled: settings.syncEnabled,
+          minimizeToTray: settings.minimizeToTray,
         },
       });
       if (apiKeyInput.trim()) {
@@ -158,6 +204,18 @@
   function formatTime(ms: number | null) {
     if (ms === null) return "—";
     return new Date(ms).toLocaleString();
+  }
+
+  function formatBytes(n: number | null | undefined) {
+    if (n == null || !Number.isFinite(n)) return "—";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let v = n;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
   }
 </script>
 
@@ -253,6 +311,13 @@
         <span>Enable sync when the app runs</span>
       </label>
       <label class="check">
+        <input type="checkbox" bind:checked={settings.minimizeToTray} />
+        <span>Minimize and close hide to system tray</span>
+      </label>
+      <p class="field-hint tray-hint">
+        When enabled, the window hides instead of closing; use the tray icon to open or quit.
+      </p>
+      <label class="check">
         <input type="checkbox" bind:checked={autostartOn} />
         <span>Start Immich Sync when Windows logs in</span>
       </label>
@@ -260,12 +325,38 @@
 
     <section class="card">
       <h2>Sync engine</h2>
+      {#if storageInfo}
+        <dl class="status storage-info">
+          <dt>Immich server disk</dt>
+          <dd>
+            {#if storageInfo.serverError}
+              <span class="err-inline">Could not load: {storageInfo.serverError}</span>
+            {:else if !settings.hasApiKey}
+              —
+              <span class="path-hint">Save an API key to query server storage.</span>
+            {:else if storageInfo.serverStorageForbidden}
+              Not shown — key needs the <code>server.storage</code> permission (Immich API key scopes).
+            {:else if storageInfo.serverDiskUsagePercentage != null}
+              {storageInfo.serverDiskAvailableHuman ?? formatBytes(storageInfo.serverDiskAvailableRaw)} free
+              ({storageInfo.serverDiskUsagePercentage.toFixed(1)}% used)
+            {:else}
+              —
+            {/if}
+          </dd>
+        </dl>
+      {/if}
       {#if status}
         <dl class="status">
           <dt>Running</dt>
           <dd>{status.running ? "Yes" : "No"}</dd>
-          <dt>Uploads (session)</dt>
-          <dd>{status.uploadsOk}</dd>
+          <dt>Local library</dt>
+          <dd>
+            {status.localFilesUploaded} of {status.localFilesTotal} supported files uploaded
+          </dd>
+          <dt>Working on</dt>
+          <dd class="current-file" title={status.currentFile ?? ""}>
+            {status.currentFile ?? "—"}
+          </dd>
           <dt>Last upload</dt>
           <dd>{formatTime(status.lastUploadMs)}</dd>
           <dt>Last error</dt>
@@ -358,6 +449,10 @@
     color: #868e96;
     line-height: 1.35;
     margin-top: -4px;
+  }
+
+  .tray-hint {
+    margin: -4px 0 10px 28px;
   }
 
   .key-stored {
@@ -514,6 +609,30 @@
 
   .status dd.error {
     color: #fa5252;
+  }
+
+  .storage-info dd {
+    font-family: inherit;
+  }
+
+  .path-hint {
+    display: inline;
+    margin-left: 6px;
+    font-size: 0.82rem;
+    color: #868e96;
+  }
+
+  .err-inline {
+    color: #f783ac;
+    font-size: 0.84rem;
+  }
+
+  .status dd.current-file {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
   }
 
   .footer {

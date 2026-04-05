@@ -66,8 +66,38 @@ impl SyncDatabase {
                     if is_duplicate { 1 } else { 0 },
                     now
                 ],
-            )
-            .map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Synced rows whose path is still a file and lies under one of `watch_roots`.
+    pub fn count_synced_files_existing_under_watch(
+        &self,
+        watch_roots: &[String],
+    ) -> Result<u64, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM synced_files")
+            .map_err(|e| e.to_string())?;
+        let paths = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut n = 0u64;
+        for p in paths {
+            let path_str = p.map_err(|e| e.to_string())?;
+            let path = Path::new(&path_str);
+            if !path.is_file() {
+                continue;
+            }
+            if !watch_roots
+                .iter()
+                .any(|r| path.starts_with(Path::new(r.as_str())))
+            {
+                continue;
+            }
+            n += 1;
+        }
+        Ok(n)
     }
 }
