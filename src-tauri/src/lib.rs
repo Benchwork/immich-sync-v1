@@ -111,106 +111,129 @@ fn clear_api_key_cmd() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn test_connection(input: TestConnectionInput) -> Result<String, String> {
-    let key = match input
-        .api_key
-        .as_ref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        Some(k) => k.to_string(),
-        None => get_api_key()
-            .ok()
-            .flatten()
-            .ok_or("No API key configured. Paste a key or save settings first.")?,
-    };
-    verify_connection(&input.server_url, &key)
+async fn test_connection(input: TestConnectionInput) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = match input
+            .api_key
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            Some(k) => k.to_string(),
+            None => get_api_key()
+                .ok()
+                .flatten()
+                .ok_or("No API key configured. Paste a key or save settings first.")?,
+        };
+        verify_connection(&input.server_url, &key)
+    })
+    .await
+    .map_err(|e| format!("Connection test task failed: {e}"))?
 }
 
 /// Login with email/password, create an Immich API key named "Immich Sync (Windows)", store it locally.
 /// The password is not saved.
 #[tauri::command]
-fn login_with_password(
+async fn login_with_password(
     input: LoginPasswordInput,
     sync: tauri::State<'_, Arc<SyncController>>,
 ) -> Result<String, String> {
-    let (secret, who) =
-        login_and_create_api_key(&input.server_url, &input.email, &input.password)?;
-    set_api_key(&secret)?;
-    sync.clear_last_error();
-    Ok(format!(
-        "Signed in as {who}. An API key was created and saved for Immich Sync."
-    ))
+    let sync = Arc::clone(&sync);
+    tauri::async_runtime::spawn_blocking(move || {
+        let (secret, who) =
+            login_and_create_api_key(&input.server_url, &input.email, &input.password)?;
+        set_api_key(&secret)?;
+        sync.clear_last_error();
+        Ok(format!(
+            "Signed in as {who}. An API key was created and saved for Immich Sync."
+        ))
+    })
+    .await
+    .map_err(|e| format!("Login task failed: {e}"))?
 }
 
 #[tauri::command]
-fn get_sync_status(
+async fn get_sync_status(
     app: tauri::AppHandle,
     sync: tauri::State<'_, Arc<SyncController>>,
 ) -> Result<SyncStatusDto, String> {
-    sync.status_with_library(&app)
+    let sync = Arc::clone(&sync);
+    tauri::async_runtime::spawn_blocking(move || sync.status_with_library(&app))
+        .await
+        .map_err(|e| format!("Status task failed: {e}"))?
 }
 
 #[tauri::command]
-fn get_storage_info(app: tauri::AppHandle) -> Result<StorageInfoDto, String> {
-    let cfg = load_config(&app)?;
+async fn get_storage_info(app: tauri::AppHandle) -> Result<StorageInfoDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = load_config(&app)?;
 
-    let api_key = get_api_key().ok().flatten();
-    let Some(ref key) = api_key else {
-        return Ok(StorageInfoDto {
-            server_disk_available_raw: None,
-            server_disk_usage_percentage: None,
-            server_disk_available_human: None,
-            server_storage_forbidden: false,
-            server_error: None,
-        });
-    };
+        let api_key = get_api_key().ok().flatten();
+        let Some(ref key) = api_key else {
+            return Ok(StorageInfoDto {
+                server_disk_available_raw: None,
+                server_disk_usage_percentage: None,
+                server_disk_available_human: None,
+                server_storage_forbidden: false,
+                server_error: None,
+            });
+        };
 
-    match fetch_server_storage_cached(&cfg.server_url, key) {
-        Ok(None) => Ok(StorageInfoDto {
-            server_disk_available_raw: None,
-            server_disk_usage_percentage: None,
-            server_disk_available_human: None,
-            server_storage_forbidden: true,
-            server_error: None,
-        }),
-        Ok(Some(s)) => Ok(StorageInfoDto {
-            server_disk_available_raw: Some(s.disk_available_raw),
-            server_disk_usage_percentage: Some(s.disk_usage_percentage),
-            server_disk_available_human: if s.disk_available.is_empty() {
-                None
-            } else {
-                Some(s.disk_available)
-            },
-            server_storage_forbidden: false,
-            server_error: None,
-        }),
-        Err(e) => Ok(StorageInfoDto {
-            server_disk_available_raw: None,
-            server_disk_usage_percentage: None,
-            server_disk_available_human: None,
-            server_storage_forbidden: false,
-            server_error: Some(e),
-        }),
-    }
+        match fetch_server_storage_cached(&cfg.server_url, key) {
+            Ok(None) => Ok(StorageInfoDto {
+                server_disk_available_raw: None,
+                server_disk_usage_percentage: None,
+                server_disk_available_human: None,
+                server_storage_forbidden: true,
+                server_error: None,
+            }),
+            Ok(Some(s)) => Ok(StorageInfoDto {
+                server_disk_available_raw: Some(s.disk_available_raw),
+                server_disk_usage_percentage: Some(s.disk_usage_percentage),
+                server_disk_available_human: if s.disk_available.is_empty() {
+                    None
+                } else {
+                    Some(s.disk_available)
+                },
+                server_storage_forbidden: false,
+                server_error: None,
+            }),
+            Err(e) => Ok(StorageInfoDto {
+                server_disk_available_raw: None,
+                server_disk_usage_percentage: None,
+                server_disk_available_human: None,
+                server_storage_forbidden: false,
+                server_error: Some(e),
+            }),
+        }
+    })
+    .await
+    .map_err(|e| format!("Storage task failed: {e}"))?
 }
 
 #[tauri::command]
-fn start_sync(
+async fn start_sync(
     app: tauri::AppHandle,
     sync: tauri::State<'_, Arc<SyncController>>,
 ) -> Result<(), String> {
     let c = Arc::clone(&sync);
-    c.start(&app, c.clone())
+    tauri::async_runtime::spawn_blocking(move || {
+        let c2 = Arc::clone(&c);
+        c.start(&app, c2)
+    })
+    .await
+    .map_err(|e| format!("Start sync task failed: {e}"))?
 }
 
 #[tauri::command]
-fn stop_sync(
-    _app: tauri::AppHandle,
-    sync: tauri::State<'_, Arc<SyncController>>,
-) -> Result<(), String> {
-    sync.stop();
-    Ok(())
+async fn stop_sync(sync: tauri::State<'_, Arc<SyncController>>) -> Result<(), String> {
+    let sync = Arc::clone(&sync);
+    tauri::async_runtime::spawn_blocking(move || {
+        sync.stop();
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Stop sync task failed: {e}"))?
 }
 
 /// Live copy of `minimize_to_tray` for window handlers (avoid disk reads on every resize).

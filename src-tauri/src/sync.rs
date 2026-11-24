@@ -157,8 +157,13 @@ impl SyncController {
     }
 
     pub fn stop(&self) {
-        let mut guard = self.inner.lock();
-        if let Some(run) = guard.take() {
+        // Release the run lock before joining so status/tray callers are not blocked for the
+        // whole worker shutdown (joining can take a while if an upload is in flight).
+        let run = {
+            let mut guard = self.inner.lock();
+            guard.take()
+        };
+        if let Some(run) = run {
             run.debouncer.stop();
             let _ = run.worker.join();
         }

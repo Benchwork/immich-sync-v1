@@ -38,6 +38,7 @@
   let loginEmail = $state("");
   let loginPassword = $state("");
   let loginBusy = $state(false);
+  let syncBusy = $state(false);
   let message = $state<string | null>(null);
   let messageKind = $state<"ok" | "err" | null>(null);
   let autostartOn = $state(false);
@@ -171,27 +172,49 @@
   }
 
   async function startSync() {
-    if (!settings) return;
+    if (!settings || syncBusy) return;
+    syncBusy = true;
     try {
+      // Persist current form first — password login already saved the API key, but folders /
+      // "enable sync" are often still only in the UI when people click Start before Save.
+      settings = { ...settings, syncEnabled: true };
+      await invoke("save_settings", {
+        input: {
+          serverUrl: settings.serverUrl,
+          watchPaths: settings.watchPaths,
+          syncEnabled: true,
+          minimizeToTray: settings.minimizeToTray,
+        },
+      });
       const key = apiKeyInput.trim();
       if (key) {
         await invoke("set_api_key_cmd", { key });
         apiKeyInput = "";
         editingApiKey = false;
-        await refresh();
       }
       await invoke("start_sync");
       await refresh();
       show("Sync started.", "ok");
     } catch (e) {
       show(invokeErr(e), "err");
+      await refresh();
+    } finally {
+      syncBusy = false;
     }
   }
 
   async function stopSync() {
-    await invoke("stop_sync");
-    await refresh();
-    show("Sync stopped.", "ok");
+    if (syncBusy) return;
+    syncBusy = true;
+    try {
+      await invoke("stop_sync");
+      await refresh();
+      show("Sync stopped.", "ok");
+    } catch (e) {
+      show(invokeErr(e), "err");
+    } finally {
+      syncBusy = false;
+    }
   }
 
   async function clearKey() {
@@ -230,7 +253,7 @@
       editingApiKey = false;
       authMode = "apiKey";
       await refresh();
-      show(msg, "ok");
+      show(`${msg} You can Start sync without clicking Save again (add folders first if needed).`, "ok");
     } catch (e) {
       show(invokeErr(e), "err");
     } finally {
@@ -471,9 +494,16 @@
         </dl>
       {/if}
       <div class="row">
-        <button type="button" onclick={startSync} disabled={status?.running}>Start sync</button>
-        <button type="button" class="secondary" onclick={stopSync} disabled={!status?.running}>
-          Stop sync
+        <button type="button" onclick={startSync} disabled={status?.running || syncBusy || loginBusy}>
+          {syncBusy && !status?.running ? "Starting…" : "Start sync"}
+        </button>
+        <button
+          type="button"
+          class="secondary"
+          onclick={stopSync}
+          disabled={!status?.running || syncBusy}
+        >
+          {syncBusy && status?.running ? "Stopping…" : "Stop sync"}
         </button>
       </div>
     </section>
