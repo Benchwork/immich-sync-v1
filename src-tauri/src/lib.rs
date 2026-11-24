@@ -6,7 +6,7 @@ mod sync;
 
 use config::{load_config, save_config, AppConfig};
 use credentials::{clear_api_key, get_api_key, set_api_key};
-use immich::{fetch_server_storage_cached, verify_connection};
+use immich::{fetch_server_storage_cached, login_and_create_api_key, verify_connection};
 use serde::{Deserialize, Serialize};
 use sync::{refresh_tray_icon, SyncController, SyncStatusDto};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +51,14 @@ pub struct TestConnectionInput {
     pub server_url: String,
     /// When set (e.g. from the form), test with this key instead of the saved keyring value.
     pub api_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginPasswordInput {
+    pub server_url: String,
+    pub email: String,
+    pub password: String,
 }
 
 #[tauri::command]
@@ -117,6 +125,22 @@ fn test_connection(input: TestConnectionInput) -> Result<String, String> {
             .ok_or("No API key configured. Paste a key or save settings first.")?,
     };
     verify_connection(&input.server_url, &key)
+}
+
+/// Login with email/password, create an Immich API key named "Immich Sync (Windows)", store it locally.
+/// The password is not saved.
+#[tauri::command]
+fn login_with_password(
+    input: LoginPasswordInput,
+    sync: tauri::State<'_, Arc<SyncController>>,
+) -> Result<String, String> {
+    let (secret, who) =
+        login_and_create_api_key(&input.server_url, &input.email, &input.password)?;
+    set_api_key(&secret)?;
+    sync.clear_last_error();
+    Ok(format!(
+        "Signed in as {who}. An API key was created and saved for Immich Sync."
+    ))
 }
 
 #[tauri::command]
@@ -299,6 +323,7 @@ pub fn run() {
             set_api_key_cmd,
             clear_api_key_cmd,
             test_connection,
+            login_with_password,
             get_sync_status,
             get_storage_info,
             start_sync,

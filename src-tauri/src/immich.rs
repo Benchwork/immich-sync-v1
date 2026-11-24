@@ -223,6 +223,147 @@ pub fn verify_connection(base_url: &str, api_key: &str) -> Result<String, String
     Ok(v)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginResponse {
+    access_token: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    user_email: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiKeyCreateResponse {
+    /// Present on current Immich versions.
+    #[serde(default)]
+    secret: Option<String>,
+    /// Older nested shape.
+    #[serde(default)]
+    api_key: Option<ApiKeyNested>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiKeyNested {
+    #[serde(default)]
+    secret: Option<String>,
+}
+
+/// Login with email/password, create a dedicated Immich API key, return its secret.
+/// The password is not returned and should not be stored by the caller.
+pub fn login_and_create_api_key(
+    base_url: &str,
+    email: &str,
+    password: &str,
+) -> Result<(String, String), String> {
+    let email = email.trim();
+    let password = password.trim();
+    if email.is_empty() || password.is_empty() {
+        return Err("Email and password are required".to_string());
+    }
+
+    let base = normalize_base_url(base_url);
+    let client = build_version_probe_client()?;
+
+    let login_url = format!("{}/api/auth/login", base);
+    let login_body = serde_json::json!({
+        "email": email,
+        "password": password,
+    });
+    let login_resp = client
+        .post(&login_url)
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .json(&login_body)
+        .send()
+        .map_err(|e| format!("Login request failed: {e}"))?;
+    let login_status = login_resp.status();
+    let login_text = login_resp
+        .text()
+        .map_err(|e| format!("Reading login response failed: {e}"))?;
+    if !login_status.is_success() {
+        return Err(format!(
+            "Login failed ({}): {}",
+            login_status,
+            truncate_err_body(&login_text)
+        ));
+    }
+    let login: LoginResponse = serde_json::from_str(&login_text)
+        .map_err(|e| format!("Bad login JSON: {e} — {}", truncate_err_body(&login_text)))?;
+    if login.access_token.is_empty() {
+        return Err("Login succeeded but no access token was returned".to_string());
+    }
+
+    let key_name = "Immich Sync (Windows)".to_string();
+    let create_url = format!("{}/api/api-keys", base);
+
+    // Prefer scoped permissions; fall back for older Immich that expects `all` or name-only.
+    let attempts: Vec<serde_json::Value> = vec![
+        serde_json::json!({
+            "name": key_name,
+            "permissions": ["asset.upload", "asset.read", "server.storage"]
+        }),
+        serde_json::json!({
+            "name": key_name,
+            "permissions": ["all"]
+        }),
+        serde_json::json!({ "name": key_name }),
+    ];
+
+    let mut last_err = String::from("Could not create API key");
+    for body in attempts {
+        let resp = client
+            .post(&create_url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", login.access_token))
+            .json(&body)
+            .send()
+            .map_err(|e| format!("Create API key request failed: {e}"))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .map_err(|e| format!("Reading create-key response failed: {e}"))?;
+        if !status.is_success() {
+            last_err = format!(
+                "Create API key failed ({}): {}",
+                status,
+                truncate_err_body(&text)
+            );
+            continue;
+        }
+        let created: ApiKeyCreateResponse = serde_json::from_str(&text)
+            .map_err(|e| format!("Bad create-key JSON: {e} — {}", truncate_err_body(&text)))?;
+        let secret = created
+            .secret
+            .or_else(|| created.api_key.and_then(|k| k.secret))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                "API key was created but Immich did not return the secret (shown only once)".to_string()
+            })?;
+
+        let who = login
+            .name
+            .filter(|s| !s.is_empty())
+            .or(login.user_email)
+            .unwrap_or_else(|| email.to_string());
+        return Ok((secret, who));
+    }
+
+    Err(last_err)
+}
+
+fn truncate_err_body(s: &str) -> String {
+    let t = s.trim();
+    if t.len() <= 280 {
+        t.to_string()
+    } else {
+        format!("{}…", &t[..280])
+    }
+}
+
 fn file_times(path: &Path) -> Result<(DateTime<Utc>, DateTime<Utc>), String> {
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     let modified = meta.modified().map_err(|e| e.to_string())?;

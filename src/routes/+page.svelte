@@ -33,6 +33,11 @@
   let apiKeyInput = $state("");
   /** When false and a key exists, show a mask instead of an empty password box. */
   let editingApiKey = $state(false);
+  /** Prefer API key paste, or email/password login that creates a key. */
+  let authMode = $state<"apiKey" | "password">("apiKey");
+  let loginEmail = $state("");
+  let loginPassword = $state("");
+  let loginBusy = $state(false);
   let message = $state<string | null>(null);
   let messageKind = $state<"ok" | "err" | null>(null);
   let autostartOn = $state(false);
@@ -201,6 +206,38 @@
     }
   }
 
+  async function loginWithPassword() {
+    if (!settings) return;
+    loginBusy = true;
+    try {
+      // Persist URL first so later sync/storage use the same host.
+      await invoke("save_settings", {
+        input: {
+          serverUrl: settings.serverUrl,
+          watchPaths: settings.watchPaths,
+          syncEnabled: settings.syncEnabled,
+          minimizeToTray: settings.minimizeToTray,
+        },
+      });
+      const msg = await invoke<string>("login_with_password", {
+        input: {
+          serverUrl: settings.serverUrl,
+          email: loginEmail.trim(),
+          password: loginPassword,
+        },
+      });
+      loginPassword = "";
+      editingApiKey = false;
+      authMode = "apiKey";
+      await refresh();
+      show(msg, "ok");
+    } catch (e) {
+      show(invokeErr(e), "err");
+    } finally {
+      loginBusy = false;
+    }
+  }
+
   function formatTime(ms: number | null) {
     if (ms === null) return "—";
     return new Date(ms).toLocaleString();
@@ -238,9 +275,9 @@
           bind:value={settings.serverUrl}
         />
       </label>
-      <label class="field">
-        <span>API key</span>
-        {#if settings.hasApiKey && !editingApiKey}
+      {#if settings.hasApiKey && !editingApiKey}
+        <label class="field">
+          <span>API key</span>
           <div class="key-stored">
             <input
               type="text"
@@ -255,39 +292,109 @@
               onclick={() => {
                 editingApiKey = true;
                 apiKeyInput = "";
+                authMode = "apiKey";
               }}>Change…</button>
           </div>
           <span class="field-hint"
-            >A key is saved (Credential Manager and app data). Use Change to replace it.</span
+            >A key is saved (Credential Manager and app data). Use Change to replace it, or sign in
+            again with email/password to create a new key.</span
           >
+        </label>
+        <div class="row">
+          <button type="button" class="secondary" onclick={testConnection}>Test connection</button>
+          <button type="button" class="ghost" onclick={clearKey}>Clear API key</button>
+        </div>
+      {:else}
+        <div class="auth-tabs" role="tablist" aria-label="Authentication method">
+          <button
+            type="button"
+            class="auth-tab"
+            class:active={authMode === "apiKey"}
+            role="tab"
+            aria-selected={authMode === "apiKey"}
+            onclick={() => (authMode = "apiKey")}>API key</button
+          >
+          <button
+            type="button"
+            class="auth-tab"
+            class:active={authMode === "password"}
+            role="tab"
+            aria-selected={authMode === "password"}
+            onclick={() => (authMode = "password")}>Email &amp; password</button
+          >
+        </div>
+
+        {#if authMode === "apiKey"}
+          <label class="field">
+            <span>API key</span>
+            <input
+              type="password"
+              autocomplete="off"
+              placeholder={settings.hasApiKey ? "Paste new API key" : "Paste API key"}
+              bind:value={apiKeyInput}
+            />
+            <span class="field-hint"
+              >Stored in Windows Credential Manager and a local backup file next to your settings.</span
+            >
+          </label>
+          <div class="row">
+            <button type="button" class="secondary" onclick={testConnection}>Test connection</button>
+            {#if settings.hasApiKey && editingApiKey}
+              <button
+                type="button"
+                class="ghost"
+                onclick={() => {
+                  editingApiKey = false;
+                  apiKeyInput = "";
+                }}>Cancel</button
+              >
+            {/if}
+          </div>
         {:else}
-          <input
-            type="password"
-            autocomplete="off"
-            placeholder={settings.hasApiKey ? "Paste new API key" : "Paste API key"}
-            bind:value={apiKeyInput}
-          />
-          {#if settings.hasApiKey && editingApiKey}
+          <label class="field">
+            <span>Email</span>
+            <input
+              type="email"
+              autocomplete="username"
+              placeholder="you@example.com"
+              bind:value={loginEmail}
+            />
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input
+              type="password"
+              autocomplete="current-password"
+              placeholder="Immich account password"
+              bind:value={loginPassword}
+            />
+            <span class="field-hint"
+              >Signs in once, creates an API key named “Immich Sync (Windows)”, and saves that key.
+              Your password is not stored.</span
+            >
+          </label>
+          <div class="row">
             <button
               type="button"
-              class="ghost"
-              onclick={() => {
-                editingApiKey = false;
-                apiKeyInput = "";
-              }}>Cancel</button
+              class="secondary"
+              onclick={loginWithPassword}
+              disabled={loginBusy || !loginEmail.trim() || !loginPassword}
             >
-          {/if}
-          <span class="field-hint"
-            >Stored in Windows Credential Manager and a local backup file next to your settings.</span
-          >
+              {loginBusy ? "Signing in…" : "Sign in & save API key"}
+            </button>
+            {#if settings.hasApiKey && editingApiKey}
+              <button
+                type="button"
+                class="ghost"
+                onclick={() => {
+                  editingApiKey = false;
+                  loginPassword = "";
+                }}>Cancel</button
+              >
+            {/if}
+          </div>
         {/if}
-      </label>
-      <div class="row">
-        <button type="button" class="secondary" onclick={testConnection}>Test connection</button>
-        {#if settings.hasApiKey}
-          <button type="button" class="ghost" onclick={clearKey}>Clear API key</button>
-        {/if}
-      </div>
+      {/if}
     </section>
 
     <section class="card">
@@ -633,6 +740,37 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 100%;
+  }
+
+  .auth-tabs {
+    display: flex;
+    gap: 4px;
+    margin: 0 0 14px;
+    padding: 4px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .auth-tab {
+    flex: 1;
+    margin: 0;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: #a1a1b0;
+    font-size: 0.86rem;
+    font-weight: 500;
+  }
+
+  .auth-tab:hover:not(:disabled) {
+    color: #e9e9ef;
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .auth-tab.active {
+    color: #f8f9fa;
+    background: rgba(255, 255, 255, 0.1);
   }
 
   .footer {

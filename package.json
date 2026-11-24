@@ -1,6 +1,6 @@
 {
   "name": "immich-sync",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Tauri app: watch folders and upload media to Immich",
   "type": "module",
   "scripts": {
